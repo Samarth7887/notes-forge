@@ -438,8 +438,7 @@ export const buildPdfDefinition = (subjectName, outline, notesData, masterSummar
         margin: [0, 0, 0, 4]
       },
       codeBody: {
-        font: 'Courier',
-        fontSize: 9,
+        fontSize: 8.5,
         color: '#f4f4f5',
         lineHeight: 1.35
       },

@@ -159,15 +159,83 @@ app.use((req, res, next) => {
 });
 
 /**
- * Cleans markdown JSON wrapping code blocks from text content.
+ * Cleans markdown JSON wrapping code blocks and fixes common LLM JSON issues.
  */
 const cleanJsonString = (str) => {
   let cleaned = str.trim();
+  // Strip markdown code fences (```json ... ``` or ``` ... ```)
   if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```[a-zA-Z]*\n/, '').replace(/\n```$/, '');
+    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*\n?/, '').replace(/\n?\s*```\s*$/, '');
   }
+  cleaned = cleaned.trim();
+
+  // Strip any leading text before the first JSON structure
+  const firstBrace = cleaned.indexOf('{');
+  const firstBracket = cleaned.indexOf('[');
+  let jsonStart = -1;
+  if (firstBrace !== -1 && firstBracket !== -1) {
+    jsonStart = Math.min(firstBrace, firstBracket);
+  } else if (firstBrace !== -1) {
+    jsonStart = firstBrace;
+  } else if (firstBracket !== -1) {
+    jsonStart = firstBracket;
+  }
+  if (jsonStart > 0) {
+    cleaned = cleaned.substring(jsonStart);
+  }
+
+  // Remove trailing commas before } or ]
+  cleaned = cleaned.replace(/,\s*([}\]])/g, '$1');
+
   return cleaned.trim();
 };
+
+/**
+ * Safely parse a JSON string from LLM output, attempting repairs for common issues.
+ */
+const safeParseJson = (rawText) => {
+  const cleaned = cleanJsonString(rawText);
+  
+  // First attempt: direct parse
+  try {
+    return JSON.parse(cleaned);
+  } catch (firstErr) {
+    console.warn('Initial JSON parse failed, attempting repair:', firstErr.message);
+  }
+
+  // Attempt to fix unescaped control characters inside JSON string values
+  let repaired = cleaned.replace(/[\x00-\x1F\x7F]/g, (ch) => {
+    if (ch === '\n') return '\\n';
+    if (ch === '\r') return '\\r';
+    if (ch === '\t') return '\\t';
+    return '';
+  });
+
+  try {
+    return JSON.parse(repaired);
+  } catch (secondErr) {
+    console.warn('Second JSON parse failed, attempting brace balancing:', secondErr.message);
+  }
+
+  // Attempt to balance unclosed braces/brackets (truncated output)
+  let opens = 0, closesNeeded = [];
+  for (const ch of repaired) {
+    if (ch === '{') { opens++; closesNeeded.push('}'); }
+    else if (ch === '[') { opens++; closesNeeded.push(']'); }
+    else if (ch === '}' || ch === ']') { opens--; closesNeeded.pop(); }
+  }
+  if (closesNeeded.length > 0) {
+    repaired += closesNeeded.reverse().join('');
+  }
+
+  // Final attempt
+  try {
+    return JSON.parse(repaired);
+  } catch (finalErr) {
+    throw new Error(`Failed to parse AI response as JSON after repair attempts: ${finalErr.message}`);
+  }
+};
+
 
 /**
  * Discover and filter models for each direct provider.
@@ -568,7 +636,7 @@ Output ONLY the raw JSON array. Do not wrap it in markdown code blocks.
     );
 
     res.json({
-      data: JSON.parse(cleanJsonString(result.text)),
+      data: safeParseJson(result.text),
       _meta: {
         providerUsed: result.providerUsed,
         modelUsed: result.modelUsed,
@@ -654,7 +722,7 @@ Strictly output ONLY the JSON string. Do not include markdown code blocks.
     );
 
     res.json({
-      data: JSON.parse(cleanJsonString(result.text)),
+      data: safeParseJson(result.text),
       _meta: {
         providerUsed: result.providerUsed,
         modelUsed: result.modelUsed,
@@ -717,7 +785,7 @@ Strictly output ONLY the JSON string. Do not wrap in markdown code blocks.
     );
 
     res.json({
-      data: JSON.parse(cleanJsonString(result.text)),
+      data: safeParseJson(result.text),
       _meta: {
         providerUsed: result.providerUsed,
         modelUsed: result.modelUsed,

@@ -166,6 +166,16 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  // Sanitize SVG strings from AI output to prevent XSS and strip problematic attributes
+  const cleanSvg = (svgString) => {
+    if (!svgString) return '';
+    // Strip script tags for safety
+    let cleaned = svgString.replace(/<script[\s\S]*?<\/script>/gi, '');
+    // Strip event handlers
+    cleaned = cleaned.replace(/\son\w+\s*=\s*["'][^"']*["']/gi, '');
+    return cleaned;
+  };
+
 
 
   // 1. FILE UPLOAD & INITIAL PARSE
@@ -1002,14 +1012,16 @@ function App() {
                         <div className="flex items-center gap-4">
                           <button
                             onClick={() => {
-                              setApiKeyInput(localStorage.getItem('gemini_api_key') || '');
+                              setGeminiKeyInput(localStorage.getItem('gemini_api_key') || '');
+                              setOpenaiKeyInput(localStorage.getItem('openai_api_key') || '');
+                              setGroqKeyInput(localStorage.getItem('groq_api_key') || '');
                               setShowApiKeyModal(true);
                             }}
                             className="flex items-center gap-2 bg-[#ffffff] dark:bg-[#262626] hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 rounded-lg px-3 py-1.5 text-sm font-medium transition-all shadow-sm"
                           >
                             <Settings className="w-4 h-4" />
                             <span>Local API Key Settings</span>
-                            {hasLocalKey ? (
+                            {(localStorage.getItem('gemini_api_key') || localStorage.getItem('openai_api_key') || localStorage.getItem('groq_api_key')) ? (
                               <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
                             ) : (
                               <span className="w-2 h-2 rounded-full bg-amber-500"></span>
