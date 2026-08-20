@@ -58,6 +58,16 @@ const COLORS = {
 // ============================================================================
 
 /**
+ * Strips a leading numeric prefix from a string, e.g. "1. foo", "2) foo", "1. 1. foo".
+ * Used to prevent double-numbering when the AI adds its own numbers to list items.
+ */
+const stripLeadingNumber = (str) => {
+  if (typeof str !== 'string') return str;
+  // Repeatedly strip leading patterns like "1. ", "2) ", "1.2 ", etc.
+  return str.replace(/^(?:\d+[.):]\s*)+/, '').trim();
+};
+
+/**
  * Creates a colored callout box with a thick left border.
  */
 const createCallout = (title, bodyContent, accentColor, bgColor) => {
@@ -298,7 +308,9 @@ const createChapterHeader = (title, subtitle) => {
   ].filter(Boolean);
 };
 
-const createTopicHeader = (name, location, priority) => {
+
+
+const createTopicHeader = (chapterNum, sectionNum, name, location, priority) => {
   const prioLevel = priority?.level || priority || 'MEDIUM';
   const prioColorMap = {
     'VERY HIGH': '#dc2626',
@@ -307,11 +319,12 @@ const createTopicHeader = (name, location, priority) => {
     'LOW': '#71717a'
   };
   const prioColor = prioColorMap[prioLevel] || COLORS.primary;
+  const label = `${chapterNum}.${sectionNum}  ${name}`;
 
   return [
     {
       columns: [
-        { text: name, style: 'topicTitle', tocItem: true, tocMargin: [15, 0, 0, 0], width: '*' },
+        { text: label, style: 'topicTitle', tocItem: true, tocMargin: [15, 0, 0, 0], width: '*' },
         { text: `[${prioLevel}]`, color: prioColor, bold: true, fontSize: 10, alignment: 'right', width: 'auto' }
       ],
       margin: [0, 18, 0, 4],
@@ -322,7 +335,7 @@ const createTopicHeader = (name, location, priority) => {
   ].filter(Boolean);
 };
 
-const createTable = (headers, rows, widths = null) => {
+const createTable = (headers, rows, widths = null, tableLabel = null) => {
   if (!headers || headers.length === 0) return null;
   const tableWidths = widths || headers.map(() => '*');
 
@@ -333,7 +346,7 @@ const createTable = (headers, rows, widths = null) => {
     fillColor: rIdx % 2 === 0 ? COLORS.tableFill : null
   })));
 
-  return {
+  const tableNode = {
     table: {
       headerRows: 1,
       widths: tableWidths,
@@ -351,11 +364,21 @@ const createTable = (headers, rows, widths = null) => {
       paddingTop: () => 5,
       paddingBottom: () => 5
     },
-    margin: [0, 6, 0, 14]
+    margin: [0, 6, 0, tableLabel ? 4 : 14]
   };
+
+  if (tableLabel) {
+    return {
+      stack: [
+        tableNode,
+        { text: tableLabel, fontSize: 9, color: COLORS.textMuted, italics: true, alignment: 'center', margin: [0, 0, 0, 12] }
+      ]
+    };
+  }
+  return tableNode;
 };
 
-const createDiagram = (title, caption, svg, steps) => {
+const createDiagram = (title, caption, svg, steps, figLabel = null) => {
   const elements = [
     { text: (title || 'VISUAL STRUCTURE').toUpperCase(), style: 'subSectionTitle', keepWithNext: true }
   ];
@@ -366,13 +389,17 @@ const createDiagram = (title, caption, svg, steps) => {
       svg: svgCleaned,
       width: 320,
       alignment: 'center',
-      margin: [0, 8, 0, 10]
+      margin: [0, 8, 0, 6]
     });
   }
 
-  if (caption) {
+  // Figure number + caption line
+  const captionParts = [];
+  if (figLabel) captionParts.push({ text: `${figLabel}`, bold: true });
+  if (caption) captionParts.push({ text: figLabel ? ` — ${caption}` : caption });
+  if (captionParts.length > 0) {
     elements.push({
-      text: caption,
+      text: captionParts,
       style: 'coverMetaMuted',
       alignment: 'center',
       italics: true,
@@ -381,11 +408,12 @@ const createDiagram = (title, caption, svg, steps) => {
   }
 
   if (steps && steps.length > 0) {
+    const cleanedSteps = steps.map(s => stripLeadingNumber(typeof s === 'string' ? s : String(s)));
     elements.push(
       createCallout('How to Draw This in the Exam', {
         stack: [
           {
-            ol: steps.map(s => ({ text: s, style: 'calloutText', fontSize: 9.5 })),
+            ol: cleanedSteps.map(s => ({ text: s, style: 'calloutText', fontSize: 9.5 })),
             margin: [6, 0, 0, 0]
           }
         ]
@@ -476,55 +504,6 @@ const createQuestion = (tut, idx) => {
     ].filter(Boolean),
     margin: [0, 4, 0, 8]
   };
-};
-
-const createExamQuestionSection = (examQuestions) => {
-  if (!examQuestions) return [];
-  const elements = [];
-
-  if (examQuestions.twoMark && examQuestions.twoMark.length > 0) {
-    elements.push({ text: '2-MARK QUESTIONS', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true, margin: [0, 8, 0, 4] });
-    examQuestions.twoMark.forEach((q, idx) => {
-      elements.push(
-        { text: `Q${idx + 1}. ${q.question}`, bold: true, fontSize: 10, margin: [0, 4, 0, 2] },
-        createCallout('Model Answer (2 Marks)', q.modelAnswer || '', '#16a34a', '#f0fdf4')
-      );
-    });
-  }
-
-  if (examQuestions.fiveMark && examQuestions.fiveMark.length > 0) {
-    elements.push({ text: '5-MARK QUESTIONS', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true, margin: [0, 12, 0, 4] });
-    examQuestions.fiveMark.forEach((q, idx) => {
-      elements.push(
-        { text: `Q${idx + 1}. ${q.question}`, bold: true, fontSize: 10, margin: [0, 4, 0, 2] },
-        createCallout('Model Answer (5 Marks)', q.modelAnswer || '', '#16a34a', '#f0fdf4')
-      );
-    });
-  }
-
-  if (examQuestions.tenMark && examQuestions.tenMark.length > 0) {
-    elements.push({ text: '10-MARK QUESTIONS', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true, margin: [0, 12, 0, 4] });
-    examQuestions.tenMark.forEach((q, idx) => {
-      elements.push(
-        { text: `Q${idx + 1}. ${q.question}`, bold: true, fontSize: 10, margin: [0, 4, 0, 2] },
-        q.answerStructure ? createCallout('Answer Structure', q.answerStructure, '#6d28d9', '#faf5ff') : null,
-        createCallout('Model Answer (10 Marks)', q.modelAnswer || '', '#16a34a', '#f0fdf4')
-      );
-    });
-  }
-
-  return elements.filter(Boolean);
-};
-
-const createAnswerTemplate = (templates) => {
-  return [
-    { text: '2-MARK ANSWER TEMPLATE', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true },
-    createCallout('2-Mark Blueprint', templates.twoMark || 'Definition + 1 supportive point / key formula.', COLORS.primary, COLORS.noteBg),
-    { text: '5-MARK ANSWER TEMPLATE', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true },
-    createCallout('5-Mark Blueprint', templates.fiveMark || 'Introduction, core mechanism steps, diagram representation, and example.', COLORS.primary, COLORS.noteBg),
-    { text: '10-MARK ANSWER TEMPLATE', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true },
-    createCallout('10-Mark Blueprint', templates.tenMark || 'Detailed Essay: Intro/Definition, visual diagram, step-by-step working principles, comparative analysis table, worked numerical / case study, and critical interpretation conclusion.', COLORS.primary, COLORS.noteBg)
-  ];
 };
 
 const createRevisionChecklist = (checklist) => {
@@ -655,17 +634,27 @@ export const buildPdfDefinition = (subjectName, outline, notesData, masterSummar
   // ========================================================================
   // 5. MAIN CHAPTERS (syllabus topics — natural content flow, NO per-topic page breaks)
   // ========================================================================
-  let chCount = 2;
+
+  // Programmatic counters — reset per chapter
+  let chCount = 2; // Chapter 1 is already used for the priority map
+
   (outline || []).forEach((unit) => {
-    content.push(...createChapterHeader(`Chapter ${chCount}`, unit.unit || 'Unit'));
+    const chapterNum = chCount;
+    content.push(...createChapterHeader(`Chapter ${chapterNum}`, unit.unit || 'Unit'));
     chCount++;
+
+    let sectionNum = 1;       // Resets per chapter: 2.1, 2.2 ...
+    let figureCount = 1;      // Resets per chapter: Figure 2.1, Figure 2.2 ...
+    let tableCount = 1;       // Resets per chapter: Table 2.1 ...
+    let exampleCount = 1;     // Resets per chapter: Example 2.1 ...
 
     (unit.topics || []).forEach(topic => {
       const topicNotes = (notesData || {})[topic.name];
       if (!topicNotes) return;
 
-      // --- Topic Header ---
-      content.push(...createTopicHeader(topicNotes.topicName || topic.name, topicNotes.sourceLocation, topicNotes.priority));
+      // --- Section Header (numbered) ---
+      content.push(...createTopicHeader(chapterNum, sectionNum, topicNotes.topicName || topic.name, topicNotes.sourceLocation, topicNotes.priority));
+      sectionNum++;
 
       // --- Introduction ---
       if (topicNotes.introduction) {
@@ -679,106 +668,107 @@ export const buildPdfDefinition = (subjectName, outline, notesData, masterSummar
         });
       }
 
-      // B. What the source says
-      if (topicNotes.sourceContent && topicNotes.sourceContent.content) {
-        content.push(createCallout(topicNotes.sourceContent.heading || "What the source says", topicNotes.sourceContent.content, COLORS.definition, COLORS.definitionBg));
-      }
-
-      // C. In very easy words
+      // B. In very easy words (sourceContent removed — AI still grounds output, just not shown as a box)
       if (topicNotes.easyExplanation && topicNotes.easyExplanation.content) {
         content.push(createNoteBox(topicNotes.easyExplanation.content));
       }
 
-      // D. Analogy
+      // C. Analogy
       if (topicNotes.analogy) {
         content.push(createCallout('Everyday Analogy', topicNotes.analogy, '#4f46e5', '#f5f3ff'));
       }
 
-      // E. Examples from source
+      // D. Examples from source — with programmatic Example N.n label
       if (Array.isArray(topicNotes.examples) && topicNotes.examples.length > 0) {
         topicNotes.examples.forEach(ex => {
-          if (ex) content.push(createExampleBox(ex));
+          if (!ex) return;
+          const exLabel = `Example ${chapterNum}.${exampleCount}`;
+          exampleCount++;
+          const exText = typeof ex === 'string' ? ex : (ex.explanation || ex.title || JSON.stringify(ex));
+          const exTitle = (typeof ex === 'object' && ex.title) ? ex.title : exLabel;
+          content.push(createCallout(`${exLabel} — ${exTitle}`, exText, COLORS.example, COLORS.exampleBg));
         });
       }
 
-      // F. Key points
+      // E. Key points
       if (Array.isArray(topicNotes.keyPoints) && topicNotes.keyPoints.length > 0) {
         content.push(
           { text: 'KEY POINTS', style: 'subSectionTitle', keepWithNext: true },
           {
-            ul: topicNotes.keyPoints.map(pt => ({ text: pt, style: 'calloutText' })),
+            ul: topicNotes.keyPoints.map(pt => ({ text: stripLeadingNumber(pt), style: 'calloutText' })),
             margin: [10, 4, 0, 12]
           }
         );
       }
 
-      // G. Table
+      // F. Table — with programmatic Table N.n label
       if (topicNotes.table && Array.isArray(topicNotes.table.headers) && topicNotes.table.headers.length > 0) {
-        content.push(createTable(topicNotes.table.headers, topicNotes.table.rows || []));
+        const tableLabel = `Table ${chapterNum}.${tableCount}`;
+        tableCount++;
+        content.push(createTable(topicNotes.table.headers, topicNotes.table.rows || [], null, tableLabel));
       }
 
-      // H. Diagram
+      // G. Diagram — with programmatic Figure N.n label
       if (topicNotes.diagram && topicNotes.diagram.svg) {
-        content.push(createDiagram(topicNotes.diagram.title || 'Visual Structure', topicNotes.diagram.caption, topicNotes.diagram.svg, topicNotes.diagram.examDrawingSteps));
+        const figLabel = `Figure ${chapterNum}.${figureCount}`;
+        figureCount++;
+        content.push(createDiagram(
+          topicNotes.diagram.title || 'Visual Structure',
+          topicNotes.diagram.caption,
+          topicNotes.diagram.svg,
+          topicNotes.diagram.examDrawingSteps,
+          figLabel
+        ));
       }
 
-      // I. Code Example / Pseudocode
+      // H. Code Example / Pseudocode
       if (topicNotes.codeExample && topicNotes.codeExample.code) {
         content.push(createCodeBlock(topicNotes.codeExample.language || 'code', topicNotes.codeExample.code, topicNotes.codeExample.explanation));
       }
 
-      // J. Worked Example (Numerical)
+      // I. Worked Example (Numerical)
       if (topicNotes.workedExample && topicNotes.workedExample.formula) {
         content.push(createWorkedExample(topicNotes.workedExample));
       }
 
-      // K. Case Study
+      // J. Case Study
       if (topicNotes.caseStudy && topicNotes.caseStudy.title) {
         content.push(createCaseStudy(topicNotes.caseStudy));
       }
 
-      // L. Comparison Table
+      // K. Comparison Table — with programmatic Table N.n label
       if (Array.isArray(topicNotes.comparisons) && topicNotes.comparisons.length > 0) {
         const compHeaders = ['Feature', topicNotes.topicName || 'Concept A', 'Variant / Related'];
         const compRows = topicNotes.comparisons.map(c => [c.feature || '', c.conceptA || '', c.conceptB || '']);
+        const compLabel = `Table ${chapterNum}.${tableCount}`;
+        tableCount++;
         content.push(
           { text: 'COMPARATIVE ANALYSIS', style: 'subSectionTitle', keepWithNext: true },
-          createTable(compHeaders, compRows)
+          createTable(compHeaders, compRows, null, compLabel)
         );
       }
 
-      // M. Memory Tricks
+      // L. Memory Tricks
       if (Array.isArray(topicNotes.memoryTricks) && topicNotes.memoryTricks.length > 0) {
         content.push(createMemoryTrickBox(topicNotes.memoryTricks));
       }
 
-      // N. Exam Tips
+      // M. Exam Tips
       if (Array.isArray(topicNotes.examTips) && topicNotes.examTips.length > 0) {
         content.push(createExamTipBox(topicNotes.examTips));
       }
 
-      // O. Common Mistakes
+      // N. Common Mistakes
       if (Array.isArray(topicNotes.commonMistakes) && topicNotes.commonMistakes.length > 0) {
         content.push(createCommonMistakeBox(topicNotes.commonMistakes));
       }
 
-      // P. Quick Recall Questions
+      // O. Quick Recall Questions
       if (Array.isArray(topicNotes.quickRecallQuestions) && topicNotes.quickRecallQuestions.length > 0) {
         content.push(createQuickRecallBox(topicNotes.quickRecallQuestions));
       }
 
-      // Q. Exam Questions (per topic)
-      if (topicNotes.examQuestions) {
-        const examQBlocks = createExamQuestionSection(topicNotes.examQuestions);
-        if (examQBlocks.length > 0) {
-          content.push(
-            { text: 'EXAM PRACTICE QUESTIONS', style: 'subSectionTitle', color: COLORS.primary, keepWithNext: true, margin: [0, 10, 0, 4] },
-            ...examQBlocks
-          );
-        }
-      }
-
-      // Thin separator between topics (NOT a page break)
+      // Thin separator between sections (NOT a page break)
       content.push({
         canvas: [
           { type: 'line', x1: 0, y1: 0, x2: 450, y2: 0, lineWidth: 0.5, lineColor: '#e4e4e7' }
@@ -792,7 +782,7 @@ export const buildPdfDefinition = (subjectName, outline, notesData, masterSummar
   // 6. FINAL SECTIONS
   // ========================================================================
 
-  // 6.1 TUTORIAL QUESTIONS - FULLY SOLVED
+  // 6.1 TUTORIAL QUESTIONS - FULLY SOLVED (from source)
   let tutIdx = 0;
   const tutQuestions = [];
   (outline || []).forEach(unit => {
@@ -864,28 +854,7 @@ export const buildPdfDefinition = (subjectName, outline, notesData, masterSummar
     }
   }
 
-  // 6.3 VIVA QUESTIONS
-  const vivaQuestions = (masterSummary && Array.isArray(masterSummary.vivaQuestions)) ? masterSummary.vivaQuestions : [];
-  if (vivaQuestions.length > 0) {
-    content.push(...createChapterHeader('Viva Practice Questions', 'Typical Short-Answer Assessment Questions'));
-    vivaQuestions.forEach((q, idx) => {
-      content.push({
-        stack: [
-          { text: `Q${idx + 1}. ${q.question}`, bold: true, fontSize: 10, margin: [0, 3, 0, 2] },
-          q.topic ? { text: `Topic: ${q.topic}`, fontSize: 8, color: COLORS.textLight, italics: true, margin: [0, 0, 0, 2] } : null,
-          { text: `Answer: ${q.answer}`, fontSize: 9.5, margin: [0, 2, 0, 6], color: '#374151' }
-        ].filter(Boolean),
-        margin: [0, 2, 0, 4]
-      });
-    });
-  }
-
-  // 6.4 EXAM ANSWER TEMPLATES
-  content.push(...createChapterHeader('Exam Answer Writing Templates', 'Mark-Based Formatting Blueprints'));
-  const templates = (masterSummary && masterSummary.examTemplates) ? masterSummary.examTemplates : {};
-  content.push(...createAnswerTemplate(templates));
-
-  // 6.5 MEMORY TRICK MASTER LIST
+  // 6.3 MEMORY TRICK MASTER LIST
   const memoryTrickMasterList = (masterSummary && Array.isArray(masterSummary.memoryTrickMasterList)) ? masterSummary.memoryTrickMasterList : [];
   if (memoryTrickMasterList.length > 0) {
     content.push(...createChapterHeader('Memory Trick Master List', 'All Mnemonics & Memory Aids'));
@@ -904,8 +873,8 @@ export const buildPdfDefinition = (subjectName, outline, notesData, masterSummar
     });
   }
 
-  // 6.6 LAST-MINUTE REVISION SHEET & CHECKLIST
-  content.push(...createChapterHeader('Last-Minute Revision & Final Checklist', 'High-Priority Summaries & Verification'));
+  // 6.4 FINAL REVISION — Last-Minute Revision Sheet & Checklist
+  content.push(...createChapterHeader('Final Revision', 'High-Priority Summaries & Quick Checklist'));
 
   const lastMinuteRevision = (masterSummary && Array.isArray(masterSummary.lastMinuteRevision)) ? masterSummary.lastMinuteRevision : [];
   if (lastMinuteRevision.length > 0) {

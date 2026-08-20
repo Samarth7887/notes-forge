@@ -125,9 +125,9 @@ Target Note Depth: {depth}
 Subject Domain Type: {domainType}
 
 YOUR TEACHING APPROACH:
-1. First present what the source actually says (faithful to source).
+1. First explain the concept clearly and faithfully based on what the source describes.
 2. Then explain it in very simple words as if teaching a complete beginner.
-3. Then provide exam-oriented content (tips, common mistakes, memory tricks, questions).
+3. Then provide exam-oriented content (tips, common mistakes, memory tricks, quick recall questions).
 
 DOMAIN-AWARE GENERATION RULES:
 - If the subject is programming/algorithms → include codeExample (with syntax-safe code and line-by-line explanation), include complexity analysis if relevant.
@@ -139,7 +139,11 @@ DOMAIN-AWARE GENERATION RULES:
 - If it is a lab/practical topic → focus on procedure, code, output, and observations.
 - Do NOT fill irrelevant sections. Set them to null or empty arrays.
 
-EXAM QUESTIONS: Generate source-grounded exam questions at different mark levels. For 5-mark and 10-mark questions, provide explicit answer structure/blueprint.
+NUMBERED LIST RULE (CRITICAL):
+- When returning arrays of steps, procedures, or ordered items (e.g. examDrawingSteps, algorithm steps, procedures), return ONLY the plain text of each item WITHOUT any leading number prefix.
+- CORRECT: ["Draw the main circle", "Add input arrow", "Label the output"]
+- WRONG: ["1. Draw the main circle", "2. Add input arrow", "3. Label the output"]
+- The renderer will automatically add numbers. Do NOT pre-number items in any array.
 
 Output your response strictly as a JSON object matching this schema. Set fields to null or empty arrays if they are not relevant or not supported by the source content:
 {
@@ -150,10 +154,6 @@ Output your response strictly as a JSON object matching this schema. Set fields 
     "reason": "[Evidence-based reason from source: which slides, how many pages, repeated emphasis, formulas, diagrams, case studies, tutorial questions]"
   },
   "introduction": "[1-2 sentence introduction to the topic suitable for beginning of an exam answer]",
-  "sourceContent": {
-    "heading": "What the source says",
-    "content": "[Faithful explanation of the core concept as described in the source. Include key terms, definitions, and facts exactly as they appear.]"
-  },
   "easyExplanation": {
     "heading": "In very easy words",
     "content": "[Explain the topic assuming the student knows absolutely nothing. Use simple English, short paragraphs, and everyday student-life analogies. Analogies must not introduce new facts or terminology.]"
@@ -180,9 +180,9 @@ Output your response strictly as a JSON object matching this schema. Set fields 
     "caption": "[Figure caption detailing what is displayed]",
     "svg": "[A clean, simplified exam-reproducible vector SVG with transparent background, simple boxes, circles, arrows, and labels. Use inline styles. Accent: #3b82f6, Muted: #71717a, Text: #18181b. Fits within 400x250 viewBox. Keep it simple enough for a student to reproduce in an exam.]",
     "examDrawingSteps": [
-      "1. Draw the main block representing...",
-      "2. Add an input arrow labeled...",
-      "3. Label the output arrow..."
+      "Draw the main block representing...",
+      "Add an input arrow labeled...",
+      "Label the output arrow..."
     ]
   },
   "memoryTricks": [
@@ -201,27 +201,6 @@ Output your response strictly as a JSON object matching this schema. Set fields 
   "quickRecallQuestions": [
     "[A quick question to test if the student understood the concept, based strictly on the source content]"
   ],
-  "examQuestions": {
-    "twoMark": [
-      {
-        "question": "[2-mark question based on source content]",
-        "modelAnswer": "[Concise model answer: definition + 1 key point]"
-      }
-    ],
-    "fiveMark": [
-      {
-        "question": "[5-mark question based on source content]",
-        "modelAnswer": "[Structured answer: Introduction → Definition → Explanation with example/diagram reference → Key points → Conclusion]"
-      }
-    ],
-    "tenMark": [
-      {
-        "question": "[10-mark question based on source content]",
-        "answerStructure": "[Step-by-step blueprint: 1. Introduction/Definition 2. Detailed explanation 3. Diagram 4. Step-wise mechanism 5. Comparison/table 6. Example/case study 7. Conclusion]",
-        "modelAnswer": "[Comprehensive model answer following the structure above]"
-      }
-    ]
-  },
   "caseStudy": {
     "title": "[Case Study Title]",
     "problem": "[The problem/challenge described in the source]",
@@ -259,8 +238,7 @@ Output your response strictly as a JSON object matching this schema. Set fields 
 }
 
 IMPORTANT:
-- Return null for codeExample, workedExample, diagram, caseStudy, table, examQuestions fields if they are not relevant or not supported by the source content.
-- For examQuestions, generate questions ONLY if the depth is "standard" or "detailed". For "concise" depth, set examQuestions to null.
+- Return null for codeExample, workedExample, diagram, caseStudy, table fields if they are not relevant or not supported by the source content.
 - Memory tricks should only be generated when they genuinely help recall source content. Do not force mnemonics.
 - Strictly output ONLY the JSON string. Do not wrap in markdown code blocks.
 `;
@@ -274,10 +252,8 @@ Generate ALL of the following sections. Each section must be grounded strictly i
 
 1. MASTER REVISION SUMMARY TABLE — one row per topic with core takeaway, key metric, and exam tip.
 2. MEMORY TRICK MASTER LIST — aggregate ALL memory tricks from all topics into one list. If a topic had no memory trick, skip it.
-3. VIVA QUESTIONS — at least 40 short-answer viva questions with answers based strictly on the concepts in the notes. Include the topic each question belongs to. If fewer than 40 distinct concepts exist, test different aspects of the same concepts.
-4. EXAM ANSWER TEMPLATES — standard answer-writing structures for 2-mark, 5-mark, and 10-mark questions.
-5. LAST-MINUTE REVISION — rapid review of ONLY the VERY HIGH and HIGH priority topics.
-6. FINAL 10-MINUTE CHECKLIST — actionable self-verification questions like "Can I define X?", "Can I draw the diagram for Y?", etc.
+3. LAST-MINUTE REVISION — rapid review of ONLY the VERY HIGH and HIGH priority topics.
+4. FINAL 10-MINUTE CHECKLIST — actionable self-verification questions like "Can I define X?", "Can I draw the diagram for Y?", etc.
 
 Output your response strictly as a JSON object matching this schema:
 {
@@ -297,18 +273,6 @@ Output your response strictly as a JSON object matching this schema:
       "explanation": "[Brief explanation]"
     }
   ],
-  "vivaQuestions": [
-    {
-      "topic": "[Topic Name this question belongs to]",
-      "question": "[Viva Question text]",
-      "answer": "[Short, precise answer based strictly on the notes]"
-    }
-  ],
-  "examTemplates": {
-    "twoMark": "[Structure template: Definition (1-2 lines) + 1 key supporting point or formula. Total: 3-4 lines.]",
-    "fiveMark": "[Structure template: 1. Definition (2 lines) 2. Explanation with key mechanism (4-5 lines) 3. Diagram/formula/example (if applicable) 4. 2-3 key points 5. Brief conclusion. Total: ~1 page.]",
-    "tenMark": "[Structure template: 1. Introduction with definition (3 lines) 2. Detailed explanation of mechanism/process (8-10 lines) 3. Labeled diagram with caption 4. Step-by-step working/algorithm (5-6 points) 5. Comparison table or advantages/disadvantages 6. Real-world example or case study reference 7. Conclusion (2-3 lines). Total: ~2 pages.]"
-  },
   "lastMinuteRevision": [
     {
       "topicName": "[Topic Name]",
