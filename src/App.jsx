@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Upload, FileText, CheckCircle, AlertCircle, Trash2, Plus, 
+  Upload, AlertCircle, Trash2, Plus, 
   Edit, Settings, Sun, Moon, FileDown, RotateCw, ChevronUp, 
-  ChevronDown, BookOpen, Sparkles, X, Check, FileCode, ArrowLeft
+  ChevronDown, BookOpen, Sparkles, X, FileCode, ArrowLeft
 } from 'lucide-react';
 import { parseFileContent } from './utils/fileParser';
-import { extractTopicOutline, generateTopicNotes, generateMasterSummary, fetchAvailableModels } from './utils/geminiApi';
+import { analyzeDocument, generateTopicNotes, generateMasterSummary, fetchAvailableModels } from './utils/geminiApi';
 import { downloadPdfGuide } from './utils/pdfGenerator';
 
 function App() {
@@ -146,7 +146,14 @@ function App() {
   const [parsedResult, setParsedResult] = useState(null);
   const [outline, setOutline] = useState([]); // [{ unit: string, topics: [{ id, name, description, selected }] }]
   const [notesData, setNotesData] = useState({}); // { topicName: notesJsonObject }
-  const [masterSummary, setMasterSummary] = useState([]);
+  const [masterSummary, setMasterSummary] = useState({
+    summaryTable: [],
+    vivaQuestions: [],
+    examTemplates: { twoMark: '', fiveMark: '', tenMark: '' },
+    lastMinuteRevision: []
+  });
+  const [syllabusLines, setSyllabusLines] = useState('Official syllabus lines were not present in the uploaded presentation.');
+  const [documentAnalysis, setDocumentAnalysis] = useState(null);
   const [selectedTopic, setSelectedTopic] = useState(null); // String name of current preview topic
   
   // Generation Settings
@@ -225,8 +232,16 @@ function App() {
       setProcessingStatus('Analyzing structure and extracting topics...');
 
       setFallbackAlerts([]);
-      const response = await extractTopicOutline(result, selectedProvider, selectedModelId, allowFallback);
-      const generatedOutline = response.data;
+      const response = await analyzeDocument(result, selectedProvider, selectedModelId, allowFallback);
+      const analysisData = response.data;
+      setDocumentAnalysis(analysisData);
+      
+      const generatedOutline = analysisData.chapters || [];
+      const extractedSyllabus = Array.isArray(analysisData.officialSyllabus) && analysisData.officialSyllabus.length > 0 
+        ? analysisData.officialSyllabus.join('\n') 
+        : 'Official syllabus lines were not present in the uploaded presentation.';
+      setSyllabusLines(extractedSyllabus);
+
       if (response._meta?.fallbackTriggered) {
         setFallbackAlerts(prev => [...prev, ...response._meta.fallbackMessages]);
       }
@@ -354,7 +369,8 @@ function App() {
         setProcessingProgress(pct);
         setProcessingStatus(`Generating comprehensive notes for: "${topic.name}" using ${PROVIDERS[activeProvider]?.name} (${activeModel}) (${currentStepNum} of ${selectedTopics.length})...`);
         
-        const response = await generateTopicNotes(topic.name, topic.description, parsedResult, depth, activeProvider, activeModel, allowFallback);
+        const domainType = documentAnalysis?.courseInfo?.subjectDomainType || 'mixed';
+        const response = await generateTopicNotes(topic.name, topic.description, parsedResult, depth, activeProvider, activeModel, allowFallback, topic.pages, domainType);
         const topicNotes = response.data;
         if (response._meta?.fallbackTriggered) {
           setFallbackAlerts(prev => {
@@ -371,7 +387,7 @@ function App() {
       setProcessingProgress(95);
       setProcessingStatus('Compiling master summary revision sheet...');
       const responseSummary = await generateMasterSummary(Object.values(generatedNotes), activeProvider, activeModel, allowFallback);
-      const summaryRows = responseSummary.data;
+      const summaryData = responseSummary.data;
       if (responseSummary._meta?.fallbackTriggered) {
         setFallbackAlerts(prev => {
           const newMsgs = responseSummary._meta.fallbackMessages.filter(msg => !prev.includes(msg));
@@ -380,7 +396,7 @@ function App() {
       }
       
       setNotesData(generatedNotes);
-      setMasterSummary(summaryRows);
+      setMasterSummary(summaryData);
       setSelectedTopic(selectedTopics[0].name);
       setProcessingProgress(100);
       setStep('preview');
@@ -410,7 +426,8 @@ function App() {
     setProcessingProgress(50);
 
     try {
-      const response = await generateTopicNotes(topicName, topicOutlineObj.description, parsedResult, depth, activeProvider, activeModel, allowFallback);
+      const domainType = documentAnalysis?.courseInfo?.subjectDomainType || 'mixed';
+      const response = await generateTopicNotes(topicName, topicOutlineObj.description, parsedResult, depth, activeProvider, activeModel, allowFallback, topicOutlineObj.pages, domainType);
       const updatedNotes = response.data;
       if (response._meta?.fallbackTriggered) {
         setFallbackAlerts(prev => {
@@ -874,7 +891,7 @@ function App() {
               {/* Primary Actions Card */}
               <div className="bg-white dark:bg-[#0c0c0f] border border-zinc-200 dark:border-zinc-800 p-4 rounded-xl shadow-sm flex flex-col gap-3">
                 <button
-                  onClick={() => downloadPdfGuide(subjectName, outline, notesData, masterSummary)}
+                  onClick={() => downloadPdfGuide(subjectName, outline, notesData, masterSummary, syllabusLines, documentAnalysis)}
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2.5 font-bold transition-colors shadow-md flex items-center justify-center gap-2"
                 >
                   <FileDown className="w-5 h-5" />
@@ -973,7 +990,7 @@ function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
-                        {masterSummary.map((row, idx) => (
+                        {(masterSummary.summaryTable || []).map((row, idx) => (
                           <tr key={idx} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-900/20 transition-colors">
                             <td className="px-4 py-3 font-bold text-zinc-800 dark:text-zinc-200">{row.topic}</td>
                             <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{row.coreTakeaway}</td>
@@ -984,6 +1001,99 @@ function App() {
                       </tbody>
                     </table>
                   </div>
+
+                  {/* Viva Questions */}
+                  {masterSummary.vivaQuestions && masterSummary.vivaQuestions.length > 0 && (
+                    <div className="mt-8 flex flex-col gap-4">
+                      <h4 className="text-xl font-bold border-b border-[#e4e4e7] dark:border-zinc-850 pb-2 uppercase tracking-wide text-blue-600 dark:text-blue-400 text-sm">Viva Practice Questions</h4>
+                      <div className="flex flex-col gap-3">
+                        {masterSummary.vivaQuestions.map((v, idx) => (
+                          <div key={idx} className="bg-zinc-50 dark:bg-zinc-900/40 p-4 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40">
+                            <p className="font-bold text-zinc-800 dark:text-zinc-200 text-sm">Q{idx + 1}. {v.question}</p>
+                            <p className="text-zinc-600 dark:text-zinc-400 text-sm mt-1.5 font-medium"><strong className="text-zinc-500 font-bold">Answer:</strong> {v.answer}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Exam Templates */}
+                  {masterSummary.examTemplates && (
+                    <div className="mt-8 flex flex-col gap-4">
+                      <h4 className="text-xl font-bold border-b border-[#e4e4e7] dark:border-zinc-850 pb-2 uppercase tracking-wide text-blue-600 dark:text-blue-400 text-sm">Exam Answer Templates</h4>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                        <div className="bg-zinc-50 dark:bg-zinc-900/40 p-4 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40 flex flex-col gap-2">
+                          <span className="text-[10px] font-extrabold text-blue-600 dark:text-blue-400 uppercase tracking-widest block mb-1">2-Mark Answer Blueprint</span>
+                          <p className="text-zinc-650 dark:text-zinc-300 text-xs leading-relaxed whitespace-pre-line font-medium">{masterSummary.examTemplates.twoMark}</p>
+                        </div>
+                        <div className="bg-zinc-50 dark:bg-zinc-900/40 p-4 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40 flex flex-col gap-2">
+                          <span className="text-[10px] font-extrabold text-blue-600 dark:text-blue-400 uppercase tracking-widest block mb-1">5-Mark Answer Blueprint</span>
+                          <p className="text-zinc-650 dark:text-zinc-300 text-xs leading-relaxed whitespace-pre-line font-medium">{masterSummary.examTemplates.fiveMark}</p>
+                        </div>
+                        <div className="bg-zinc-50 dark:bg-zinc-900/40 p-4 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40 flex flex-col gap-2">
+                          <span className="text-[10px] font-extrabold text-blue-600 dark:text-blue-400 uppercase tracking-widest block mb-1">10-Mark Answer Blueprint</span>
+                          <p className="text-zinc-650 dark:text-zinc-300 text-xs leading-relaxed whitespace-pre-line font-medium">{masterSummary.examTemplates.tenMark}</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Last-Minute Revision */}
+                  {masterSummary.lastMinuteRevision && masterSummary.lastMinuteRevision.length > 0 && (
+                    <div className="mt-8 flex flex-col gap-4">
+                      <h4 className="text-xl font-bold border-b border-[#e4e4e7] dark:border-zinc-850 pb-2 uppercase tracking-wide text-rose-600 dark:text-rose-455 text-sm">Last-Minute Rapid Revision (High Priority Only)</h4>
+                      <div className="flex flex-col gap-3">
+                        {masterSummary.lastMinuteRevision.map((r, idx) => (
+                          <div key={idx} className="border-l-4 border-rose-500 bg-rose-500/10 dark:bg-rose-500/5 p-4 rounded-r-xl">
+                            <span className="text-xs font-bold text-rose-600 dark:text-rose-400 block mb-1">{r.topicName}</span>
+                            <p className="text-zinc-850 dark:text-zinc-200 text-sm leading-relaxed"><strong className="text-zinc-500 font-bold">Key Definition:</strong> {r.definition}</p>
+                            {r.keyFormula && r.keyFormula !== 'N/A' && (
+                              <p className="text-zinc-850 dark:text-zinc-200 text-sm mt-1.5 font-mono"><strong className="text-zinc-500 font-sans font-bold">Key Formula:</strong> {r.keyFormula}</p>
+                            )}
+                            <p className="text-amber-700 dark:text-amber-400 text-sm mt-1.5 font-medium"><strong className="text-zinc-500 font-bold">Critical Exam Point:</strong> {r.highPriorityPoint}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Memory Trick Master List */}
+                  {masterSummary.memoryTrickMasterList && masterSummary.memoryTrickMasterList.length > 0 && (
+                    <div className="mt-8 flex flex-col gap-4">
+                      <h4 className="text-xl font-bold border-b border-[#e4e4e7] dark:border-zinc-850 pb-2 uppercase tracking-wide text-purple-600 dark:text-purple-400 text-sm">Memory Trick Master List</h4>
+                      <div className="flex flex-col gap-3">
+                        {masterSummary.memoryTrickMasterList.map((trick, idx) => (
+                          <div key={idx} className="border-l-4 border-purple-500 bg-purple-500/10 dark:bg-purple-500/5 p-4 rounded-r-xl">
+                            <div className="flex items-baseline gap-2">
+                              <span className="font-bold text-purple-600 dark:text-purple-400 text-sm">"{trick.mnemonic}"</span>
+                              <span className="text-zinc-700 dark:text-zinc-300 text-sm">— {trick.meaning}</span>
+                            </div>
+                            {trick.topic && (
+                              <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mt-1">{trick.topic}</span>
+                            )}
+                            {trick.explanation && (
+                              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">{trick.explanation}</p>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 10-Minute Final Exam Checklist */}
+                  {masterSummary.finalChecklist && masterSummary.finalChecklist.length > 0 && (
+                    <div className="mt-8 flex flex-col gap-4">
+                      <h4 className="text-xl font-bold border-b border-[#e4e4e7] dark:border-zinc-850 pb-2 uppercase tracking-wide text-blue-600 dark:text-blue-400 text-sm">10-Minute Final Exam Checklist</h4>
+                      <div className="flex flex-col gap-2">
+                        {masterSummary.finalChecklist.map((item, idx) => (
+                          <div key={idx} className="flex items-center gap-3 bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-lg border border-zinc-200/50 dark:border-zinc-800/40">
+                            <span className="text-lg select-none text-blue-600 dark:text-blue-400">☐</span>
+                            <span className="text-sm text-zinc-700 dark:text-zinc-300 font-medium">{item}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               ) : (
                 /* Topic Notes display */
@@ -1037,101 +1147,218 @@ function App() {
                         </div>
                       </div>
 
-                      {/* CALLOUT: DEFINITION */}
-                      <div className="border-l-4 border-teal-600 bg-teal-500/10 dark:bg-teal-500/5 p-4 rounded-r-xl">
-                        <span className="text-[10px] font-extrabold text-teal-600 dark:text-teal-400 uppercase tracking-widest block mb-1">
-                          Definition
+                      {/* Priority Tag & Source Location */}
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <span className={`px-2.5 py-1 text-xs font-bold rounded-lg ${
+                          data.priority?.level === 'VERY HIGH' || data.priority === 'VERY HIGH'
+                            ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                            : data.priority?.level === 'HIGH' || data.priority === 'HIGH'
+                            ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                            : 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20'
+                        }`}>
+                          Priority: {data.priority?.level || data.priority || 'MEDIUM'}
                         </span>
-                        <p className="text-zinc-800 dark:text-zinc-200 leading-relaxed text-sm md:text-base">
-                          {data.definition}
+                        {data.sourceLocation && (
+                          <span className="px-2.5 py-1 text-xs font-bold bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-400 rounded-lg border border-zinc-200/50 dark:border-zinc-800/50">
+                            Location: {data.sourceLocation}
+                          </span>
+                        )}
+                      </div>
+
+                      {data.priority?.reason && (
+                        <p className="text-xs text-zinc-550 dark:text-zinc-400 italic">
+                          <strong className="font-semibold text-zinc-500">Priority Reason:</strong> {data.priority.reason}
                         </p>
-                      </div>
+                      )}
 
-                      {/* CALLOUT: WHY IT MATTERS */}
-                      <div className="border-l-4 border-blue-600 bg-blue-500/10 dark:bg-blue-500/5 p-4 rounded-r-xl">
-                        <span className="text-[10px] font-extrabold text-blue-600 dark:text-blue-400 uppercase tracking-widest block mb-1">
-                          Why It Matters
-                        </span>
-                        <p className="text-zinc-800 dark:text-zinc-200 leading-relaxed text-sm">
-                          {data.whyItMatters}
-                        </p>
-                      </div>
+                      {/* CALLOUT: DEFINITIONS */}
+                      {data.definitions && data.definitions.length > 0 && (
+                        <div className="border-l-4 border-teal-600 bg-teal-500/10 dark:bg-teal-500/5 p-4 rounded-r-xl">
+                          <span className="text-[10px] font-extrabold text-teal-600 dark:text-teal-400 uppercase tracking-widest block mb-1">
+                            Source Definition
+                          </span>
+                          <div className="flex flex-col gap-2">
+                            {data.definitions.map((def, idx) => (
+                              <p key={idx} className="text-zinc-800 dark:text-zinc-200 leading-relaxed text-sm md:text-base">
+                                {def}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
-                      {/* HOW IT WORKS */}
-                      <div>
-                        <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
-                          How It Works
-                        </h4>
-                        <ol className="flex flex-col gap-3">
-                          {data.howItWorks.map((step, idx) => (
-                            <li key={idx} className="flex gap-3 text-sm leading-relaxed">
-                              <span className="font-extrabold text-blue-600 dark:text-blue-400 select-none">
-                                {idx + 1}.
-                              </span>
-                              <span className="text-zinc-700 dark:text-zinc-300">{step}</span>
-                            </li>
-                          ))}
-                        </ol>
-                      </div>
+                      {/* SOURCE CONTENT */}
+                      {data.sourceContent && data.sourceContent.content && (
+                        <div className="bg-zinc-55 dark:bg-zinc-900/40 p-4 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40">
+                          <h4 className="text-xs font-extrabold text-zinc-500 dark:text-zinc-450 uppercase tracking-wider mb-2">
+                            {data.sourceContent.heading || "What the source says"}
+                          </h4>
+                          <p className="text-zinc-700 dark:text-zinc-350 leading-relaxed text-sm">
+                            {data.sourceContent.content}
+                          </p>
+                        </div>
+                      )}
 
-                      {/* DIAGRAM SVG */}
-                      {data.diagramSvg && (
+                      {/* EASY EXPLANATION */}
+                      {data.easyExplanation && data.easyExplanation.content && (
+                        <div className="border-l-4 border-blue-600 bg-blue-500/10 dark:bg-blue-500/5 p-4 rounded-r-xl">
+                          <h4 className="text-xs font-extrabold text-blue-600 dark:text-blue-400 uppercase tracking-widest block mb-1">
+                            {data.easyExplanation.heading || "In very easy words"}
+                          </h4>
+                          <p className="text-zinc-800 dark:text-zinc-200 leading-relaxed text-sm">
+                            {data.easyExplanation.content}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* ANALOGY */}
+                      {data.analogy && (
+                        <div className="border-l-4 border-indigo-600 bg-indigo-500/10 dark:bg-indigo-500/5 p-4 rounded-r-xl">
+                          <span className="text-[10px] font-extrabold text-indigo-600 dark:text-indigo-400 uppercase tracking-widest block mb-1">
+                            Everyday Analogy
+                          </span>
+                          <p className="text-zinc-850 dark:text-zinc-250 leading-relaxed text-sm italic">
+                            {data.analogy}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* KEY POINTS */}
+                      {data.keyPoints && data.keyPoints.length > 0 && (
                         <div>
                           <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
-                            Visual Structure
+                            Key Principles & Notes
+                          </h4>
+                          <ul className="flex flex-col gap-2">
+                            {data.keyPoints.map((pt, idx) => (
+                              <li key={idx} className="flex gap-2 text-sm leading-relaxed">
+                                <span className="text-blue-600 dark:text-blue-400 font-extrabold select-none">•</span>
+                                <span className="text-zinc-700 dark:text-zinc-300">{pt}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* DIAGRAM */}
+                      {data.diagram && data.diagram.svg && (
+                        <div>
+                          <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
+                            {data.diagram.title || 'Visual Structure'}
                           </h4>
                           <div className="bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 p-4 rounded-xl flex justify-center overflow-x-auto shadow-inner">
                             <div 
                               className="flex-shrink-0"
-                              dangerouslySetInnerHTML={{ __html: cleanSvg(data.diagramSvg) }}
+                              dangerouslySetInnerHTML={{ __html: cleanSvg(data.diagram.svg) }}
                             />
                           </div>
-                        </div>
-                      )}
-
-                      {/* COMPLEXITY METRICS */}
-                      {data.complexity && (data.complexity.time || data.complexity.space) && (
-                        <div>
-                          <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
-                            Complexity & Quantitative Metrics
-                          </h4>
-                          <div className="border-l-4 border-purple-600 bg-purple-500/10 dark:bg-purple-500/5 p-4 rounded-r-xl flex flex-col gap-3">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                              <div>
-                                <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 block mb-0.5">Time Complexity</span>
-                                <span className="font-mono font-bold text-sm text-zinc-800 dark:text-zinc-200">{data.complexity.time || 'N/A'}</span>
-                              </div>
-                              <div>
-                                <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 block mb-0.5">Space Complexity</span>
-                                <span className="font-mono font-bold text-sm text-zinc-800 dark:text-zinc-200">{data.complexity.space || 'N/A'}</span>
-                              </div>
-                            </div>
-                            <div className="h-px bg-purple-200 dark:bg-purple-900/30"></div>
-                            <p className="text-xs text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                              {data.complexity.explanation}
+                          {data.diagram.caption && (
+                            <p className="text-center text-xs text-zinc-500 dark:text-zinc-400 mt-2 italic">
+                              {data.diagram.caption}
                             </p>
-                          </div>
+                          )}
+                          {data.diagram.examDrawingSteps && data.diagram.examDrawingSteps.length > 0 && (
+                            <div className="mt-3 bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-lg border border-zinc-200/50 dark:border-zinc-800/40">
+                              <span className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest block mb-1">
+                                How to draw this in the exam:
+                              </span>
+                              <ol className="list-decimal pl-4 flex flex-col gap-1 text-xs text-zinc-650 dark:text-zinc-350">
+                                {data.diagram.examDrawingSteps.map((step, idx) => (
+                                  <li key={idx}>{step}</li>
+                                ))}
+                              </ol>
+                            </div>
+                          )}
                         </div>
                       )}
 
-                      {/* CODE / EXAMPLE BLOCK */}
-                      {data.codeSnippet && data.codeSnippet.code && (
+                      {/* CODE EXAMPLE */}
+                      {data.codeExample && data.codeExample.code && (
                         <div>
                           <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
-                            {data.codeSnippet.language === 'none' ? 'Worked Example & Walkthrough' : 'Implementation Blueprint'}
+                            Implementation Blueprint ({data.codeExample.language || 'Code'})
                           </h4>
                           <div className="bg-[#18181b] border border-zinc-800 rounded-xl overflow-hidden flex flex-col shadow-lg">
                             <div className="bg-zinc-900 px-4 py-2 border-b border-zinc-800 flex items-center justify-between text-xs text-zinc-400">
-                              <span className="font-mono uppercase">{data.codeSnippet.language === 'none' ? 'worked example' : data.codeSnippet.language}</span>
+                              <span className="font-mono uppercase">{data.codeExample.language || 'code'}</span>
                               <FileCode className="w-4 h-4" />
                             </div>
                             <pre className="p-4 overflow-x-auto text-emerald-400 dark:text-emerald-300 font-mono text-xs md:text-sm leading-relaxed whitespace-pre">
-                              <code>{data.codeSnippet.code}</code>
+                              <code>{data.codeExample.code}</code>
                             </pre>
                           </div>
-                          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-2.5 leading-relaxed bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-lg border border-zinc-200/50 dark:border-zinc-800/40">
-                            {data.codeSnippet.explanation}
-                          </p>
+                          {data.codeExample.explanation && (
+                            <p className="text-xs text-zinc-550 dark:text-zinc-405 mt-2.5 leading-relaxed bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-lg border border-zinc-200/50 dark:border-zinc-800/40">
+                              {data.codeExample.explanation}
+                            </p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* WORKED EXAMPLE (NUMERICAL) */}
+                      {data.workedExample && data.workedExample.formula && (
+                        <div>
+                          <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
+                            Worked Numerical Example
+                          </h4>
+                          <div className="border-l-4 border-rose-600 bg-rose-500/10 dark:bg-rose-500/5 p-4 rounded-r-xl flex flex-col gap-3">
+                            <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">{data.workedExample.title}</span>
+                            <div className="text-xs grid grid-cols-1 gap-2 text-zinc-700 dark:text-zinc-350">
+                              <div><strong className="text-rose-600 dark:text-rose-400">Given:</strong> {data.workedExample.given}</div>
+                              <div><strong className="text-rose-600 dark:text-rose-400">Required:</strong> {data.workedExample.required}</div>
+                              <div><strong className="text-rose-600 dark:text-rose-400">Formula:</strong> {data.workedExample.formula}</div>
+                              <div><strong className="text-rose-600 dark:text-rose-400">Substitution:</strong> {data.workedExample.substitution}</div>
+                              <div><strong className="text-rose-600 dark:text-rose-400">Calculation:</strong> {data.workedExample.calculation}</div>
+                              <div><strong className="text-rose-600 dark:text-rose-400">Answer:</strong> {data.workedExample.answer}</div>
+                              <div><strong className="text-rose-600 dark:text-rose-400">Interpretation:</strong> {data.workedExample.interpretation}</div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* CASE STUDY */}
+                      {data.caseStudy && data.caseStudy.title && (
+                        <div>
+                          <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
+                            Case Study: {data.caseStudy.title}
+                          </h4>
+                          <div className="border-l-4 border-amber-600 bg-amber-500/10 dark:bg-amber-500/5 p-4 rounded-r-xl flex flex-col gap-2 text-xs">
+                            <div><strong className="text-amber-700 dark:text-amber-400">Problem:</strong> {data.caseStudy.problem}</div>
+                            <div><strong className="text-amber-700 dark:text-amber-400">Objective:</strong> {data.caseStudy.objective}</div>
+                            <div><strong className="text-amber-700 dark:text-amber-400">Method:</strong> {data.caseStudy.method}</div>
+                            <div><strong className="text-amber-700 dark:text-amber-400">Analysis:</strong> {data.caseStudy.analysis}</div>
+                            <div><strong className="text-amber-700 dark:text-amber-400">Result:</strong> {data.caseStudy.result}</div>
+                            <div><strong className="text-amber-700 dark:text-amber-400">Exam Relevance:</strong> {data.caseStudy.examRelevance}</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* DYNAMIC TABLES */}
+                      {data.table && data.table.headers && data.table.headers.length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
+                            Summary Data & Rules
+                          </h4>
+                          <div className="border border-zinc-200 dark:border-zinc-800 rounded-xl overflow-hidden">
+                            <table className="w-full text-left text-xs divide-y divide-zinc-200 dark:divide-zinc-800">
+                              <thead className="bg-[#18181b] dark:bg-[#121214] text-white font-bold">
+                                <tr>
+                                  {data.table.headers.map((h, idx) => (
+                                    <th key={idx} className="px-4 py-2.5">{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800 text-zinc-700 dark:text-zinc-300">
+                                {(data.table.rows || []).map((row, rIdx) => (
+                                  <tr key={rIdx} className="hover:bg-zinc-50/50 dark:hover:bg-zinc-900/20 transition-colors">
+                                    {row.map((cell, cIdx) => (
+                                      <td key={cIdx} className="px-4 py-2.5">{cell}</td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       )}
 
@@ -1164,20 +1391,137 @@ function App() {
                         </div>
                       )}
 
-                      {/* EXAM FOCUS / TIPS */}
-                      {data.examFocus && data.examFocus.length > 0 && (
+                      {/* MEMORY TRICKS */}
+                      {data.memoryTricks && data.memoryTricks.length > 0 && (
+                        <div className="border-l-4 border-purple-600 bg-purple-500/10 dark:bg-purple-500/5 p-4 rounded-r-xl">
+                          <span className="text-[10px] font-extrabold text-purple-600 dark:text-purple-400 uppercase tracking-widest block mb-2">
+                            Memory Tricks & Mnemonics
+                          </span>
+                          <div className="flex flex-col gap-3 text-sm text-zinc-700 dark:text-zinc-300">
+                            {data.memoryTricks.map((trick, idx) => (
+                              <div key={idx} className="flex flex-col gap-0.5">
+                                <span className="font-bold text-purple-600 dark:text-purple-400">"{trick.mnemonic}" — {trick.meaning}</span>
+                                <span className="text-xs text-zinc-500 dark:text-zinc-400">{trick.explanation}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* EXAM TIPS */}
+                      {data.examTips && data.examTips.length > 0 && (
                         <div className="border-l-4 border-amber-600 bg-amber-500/10 dark:bg-amber-500/5 p-4 rounded-r-xl">
                           <span className="text-[10px] font-extrabold text-amber-600 dark:text-amber-400 uppercase tracking-widest block mb-2">
-                            Exam Focus & Tips
+                            Exam Tips
                           </span>
                           <ul className="flex flex-col gap-2 text-sm text-zinc-700 dark:text-zinc-300">
-                            {data.examFocus.map((tip, idx) => (
+                            {data.examTips.map((tip, idx) => (
                               <li key={idx} className="flex gap-2">
                                 <span className="text-amber-600 dark:text-amber-400 select-none">•</span>
                                 <span>{tip}</span>
                               </li>
                             ))}
                           </ul>
+                        </div>
+                      )}
+
+                      {/* COMMON MISTAKES */}
+                      {data.commonMistakes && data.commonMistakes.length > 0 && (
+                        <div className="border-l-4 border-rose-600 bg-rose-500/10 dark:bg-rose-500/5 p-4 rounded-r-xl">
+                          <span className="text-[10px] font-extrabold text-rose-600 dark:text-rose-400 uppercase tracking-widest block mb-2">
+                            Common Pitfalls & Mistakes
+                          </span>
+                          <ul className="flex flex-col gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+                            {data.commonMistakes.map((mistake, idx) => (
+                              <li key={idx} className="flex gap-2">
+                                <span className="text-rose-600 dark:text-rose-400 select-none">⚠️</span>
+                                <span>{mistake}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* QUICK RECALL QUESTIONS */}
+                      {data.quickRecallQuestions && data.quickRecallQuestions.length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-extrabold text-zinc-500 uppercase tracking-widest mb-3">
+                            Quick Recall Questions
+                          </h4>
+                          <ul className="flex flex-col gap-2">
+                            {data.quickRecallQuestions.map((q, idx) => (
+                              <li key={idx} className="flex gap-2 text-xs leading-relaxed italic bg-cyan-50 dark:bg-cyan-900/10 p-2.5 rounded-lg border border-cyan-200/50 dark:border-cyan-800/40 text-zinc-650 dark:text-zinc-350">
+                                <span className="text-cyan-600 dark:text-cyan-400 select-none">❓</span>
+                                <span>{q}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* EXAM PRACTICE QUESTIONS */}
+                      {data.examQuestions && (
+                        <div className="flex flex-col gap-4">
+                          <h4 className="text-xs font-extrabold text-blue-600 dark:text-blue-400 uppercase tracking-widest border-b border-zinc-200 dark:border-zinc-800 pb-2">
+                            Exam Practice Questions
+                          </h4>
+
+                          {data.examQuestions.twoMark && data.examQuestions.twoMark.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                              <span className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest">2-Mark Questions</span>
+                              {data.examQuestions.twoMark.map((q, idx) => (
+                                <div key={idx} className="bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40">
+                                  <p className="font-bold text-zinc-800 dark:text-zinc-200 text-sm">Q{idx + 1}. {q.question}</p>
+                                  {q.modelAnswer && (
+                                    <div className="border-l-2 border-emerald-500 pl-3 mt-2">
+                                      <span className="text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Model Answer</span>
+                                      <p className="text-zinc-600 dark:text-zinc-400 text-xs mt-1 leading-relaxed">{q.modelAnswer}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {data.examQuestions.fiveMark && data.examQuestions.fiveMark.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                              <span className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest">5-Mark Questions</span>
+                              {data.examQuestions.fiveMark.map((q, idx) => (
+                                <div key={idx} className="bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40">
+                                  <p className="font-bold text-zinc-800 dark:text-zinc-200 text-sm">Q{idx + 1}. {q.question}</p>
+                                  {q.modelAnswer && (
+                                    <div className="border-l-2 border-emerald-500 pl-3 mt-2">
+                                      <span className="text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Model Answer</span>
+                                      <p className="text-zinc-600 dark:text-zinc-400 text-xs mt-1 leading-relaxed whitespace-pre-line">{q.modelAnswer}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {data.examQuestions.tenMark && data.examQuestions.tenMark.length > 0 && (
+                            <div className="flex flex-col gap-3">
+                              <span className="text-[10px] font-extrabold text-zinc-500 uppercase tracking-widest">10-Mark Questions</span>
+                              {data.examQuestions.tenMark.map((q, idx) => (
+                                <div key={idx} className="bg-zinc-50 dark:bg-zinc-900/40 p-3 rounded-xl border border-zinc-200/50 dark:border-zinc-800/40">
+                                  <p className="font-bold text-zinc-800 dark:text-zinc-200 text-sm">Q{idx + 1}. {q.question}</p>
+                                  {q.answerStructure && (
+                                    <div className="border-l-2 border-purple-500 pl-3 mt-2">
+                                      <span className="text-[9px] font-extrabold text-purple-600 dark:text-purple-400 uppercase tracking-widest">Answer Structure</span>
+                                      <p className="text-zinc-600 dark:text-zinc-400 text-xs mt-1 leading-relaxed whitespace-pre-line">{q.answerStructure}</p>
+                                    </div>
+                                  )}
+                                  {q.modelAnswer && (
+                                    <div className="border-l-2 border-emerald-500 pl-3 mt-2">
+                                      <span className="text-[9px] font-extrabold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">Model Answer</span>
+                                      <p className="text-zinc-600 dark:text-zinc-400 text-xs mt-1 leading-relaxed whitespace-pre-line">{q.modelAnswer}</p>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       )}
 

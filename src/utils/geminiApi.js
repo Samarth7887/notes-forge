@@ -52,14 +52,32 @@ export const extractTopicOutline = async (parsedResult, provider, model, allowFa
 };
 
 /**
+ * Perform document-level analysis.
+ */
+export const analyzeDocument = async (parsedResult, provider, model, allowFallback) => {
+  const response = await fetch('/api/analyze-document', {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify({ parsedResult, provider, model, allowFallback }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error?.message || `Document analysis failed with status ${response.status}`);
+  }
+
+  return await response.json();
+};
+
+/**
  * Generate detailed notes for a single topic.
  * Passes provider, model, and fallback configurations to the backend.
  */
-export const generateTopicNotes = async (topicName, topicDescription, parsedResult, depth, provider, model, allowFallback) => {
+export const generateTopicNotes = async (topicName, topicDescription, parsedResult, depth, provider, model, allowFallback, topicPages, domainType) => {
   const response = await fetch('/api/notes', {
     method: 'POST',
     headers: getHeaders(),
-    body: JSON.stringify({ topicName, topicDescription, parsedResult, depth, provider, model, allowFallback }),
+    body: JSON.stringify({ topicName, topicDescription, parsedResult, depth, provider, model, allowFallback, topicPages, domainType }),
   });
 
   if (!response.ok) {

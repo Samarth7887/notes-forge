@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { createRequire } from 'module';
+import { GROUNDING_RULES, OUTLINE_PROMPT, ANALYZE_DOCUMENT_PROMPT, TOPIC_NOTES_PROMPT, SUMMARY_PROMPT } from './masterExamGuideSpec.js';
 const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 
@@ -128,12 +129,196 @@ const PROVIDERS = {
 };
 
 /**
+ * Universal PDF parser helper supporting both pdf-parse v1 (function) and v2 (class)
+ */
+const parsePdfBuffer = async (buffer) => {
+  if (typeof pdfParse === 'function') {
+    return await pdfParse(buffer);
+  }
+  if (pdfParse && typeof pdfParse.default === 'function') {
+    return await pdfParse.default(buffer);
+  }
+  if (pdfParse && pdfParse.PDFParse) {
+    const parser = new pdfParse.PDFParse({ data: buffer });
+    const res = await parser.getText();
+    if (typeof parser.destroy === 'function') {
+      await parser.destroy();
+    }
+    return res;
+  }
+  throw new Error('Unsupported pdf-parse module interface');
+};
+
+/**
  * Server-side PDF text extraction wrapper.
  */
 const extractPdfText = async (base64String) => {
   const buffer = Buffer.from(base64String, 'base64');
-  const data = await pdfParse(buffer);
+  const data = await parsePdfBuffer(buffer);
   return data.text || '';
+};
+
+/**
+ * Extracts pages from PDF separated by form feed (\f)
+ */
+const extractPdfPagesText = async (base64String) => {
+  const buffer = Buffer.from(base64String, 'base64');
+  const data = await parsePdfBuffer(buffer);
+  const rawPages = (data.text || '').split('\f');
+  return rawPages.map((p, idx) => ({
+    pageNumber: idx + 1,
+    title: `Page ${idx + 1}`,
+    content: p.trim()
+  })).filter(p => p.content.length > 0);
+};
+
+/**
+ * Normalizes input document pages from PPTX or PDF
+ */
+const getSourcePages = async (parsedResult) => {
+  if (parsedResult.type === 'pptx') {
+    return parsedResult.pages || [];
+  } else if (parsedResult.type === 'pdf') {
+    return await extractPdfPagesText(parsedResult.base64);
+  }
+  return [];
+};
+
+/**
+ * Deterministically chunks pages by page boundaries without exceeding max size
+ */
+const chunkPages = (pages, maxChunkSize = 80000) => {
+  const chunks = [];
+  let currentChunk = [];
+  let currentLength = 0;
+
+  for (const page of pages) {
+    const pageText = `[Page/Slide ${page.pageNumber}: ${page.title}]\n${page.content}\n\n`;
+    if (currentLength + pageText.length > maxChunkSize && currentChunk.length > 0) {
+      chunks.push(currentChunk);
+      currentChunk = [];
+      currentLength = 0;
+    }
+    currentChunk.push(page);
+    currentLength += pageText.length;
+  }
+  if (currentChunk.length > 0) {
+    chunks.push(currentChunk);
+  }
+  return chunks;
+};
+
+/**
+ * Merges multiple analysis chunks from document-level analysis
+ */
+const mergeAnalysis = (analyses) => {
+  if (analyses.length === 0) return {};
+  
+  const merged = {
+    courseInfo: {
+      subjectName: '',
+      courseCode: '',
+      moduleNumber: '',
+      moduleTitle: ''
+    },
+    officialSyllabus: [],
+    courseOutcomes: [],
+    assessmentInfo: [],
+    references: [],
+    chapters: [],
+    priorityMap: [],
+    importantDefinitions: [],
+    importantNumbers: [],
+    caseStudies: [],
+    tutorialQuestions: [],
+    vivaTopics: []
+  };
+
+  const chapterMap = new Map();
+
+  analyses.forEach((analysis) => {
+    if (analysis.courseInfo) {
+      if (!merged.courseInfo.subjectName && analysis.courseInfo.subjectName) merged.courseInfo.subjectName = analysis.courseInfo.subjectName;
+      if (!merged.courseInfo.courseCode && analysis.courseInfo.courseCode) merged.courseInfo.courseCode = analysis.courseInfo.courseCode;
+      if (!merged.courseInfo.moduleNumber && analysis.courseInfo.moduleNumber) merged.courseInfo.moduleNumber = analysis.courseInfo.moduleNumber;
+      if (!merged.courseInfo.moduleTitle && analysis.courseInfo.moduleTitle) merged.courseInfo.moduleTitle = analysis.courseInfo.moduleTitle;
+    }
+
+    if (Array.isArray(analysis.officialSyllabus)) merged.officialSyllabus.push(...analysis.officialSyllabus);
+    if (Array.isArray(analysis.courseOutcomes)) merged.courseOutcomes.push(...analysis.courseOutcomes);
+    if (Array.isArray(analysis.assessmentInfo)) merged.assessmentInfo.push(...analysis.assessmentInfo);
+    if (Array.isArray(analysis.references)) merged.references.push(...analysis.references);
+    if (Array.isArray(analysis.priorityMap)) merged.priorityMap.push(...analysis.priorityMap);
+    if (Array.isArray(analysis.importantDefinitions)) merged.importantDefinitions.push(...analysis.importantDefinitions);
+    if (Array.isArray(analysis.importantNumbers)) merged.importantNumbers.push(...analysis.importantNumbers);
+    if (Array.isArray(analysis.caseStudies)) merged.caseStudies.push(...analysis.caseStudies);
+    if (Array.isArray(analysis.tutorialQuestions)) merged.tutorialQuestions.push(...analysis.tutorialQuestions);
+    if (Array.isArray(analysis.vivaTopics)) merged.vivaTopics.push(...analysis.vivaTopics);
+
+    if (Array.isArray(analysis.chapters)) {
+      analysis.chapters.forEach(ch => {
+        const chName = ch.unit || ch.chapterName || '';
+        if (!chName) return;
+        if (chapterMap.has(chName)) {
+          const existing = chapterMap.get(chName);
+          if (Array.isArray(ch.topics)) {
+            ch.topics.forEach(topic => {
+              if (!existing.topics.some(t => t.name.toLowerCase() === topic.name.toLowerCase())) {
+                existing.topics.push(topic);
+              }
+            });
+          }
+        } else {
+          const newCh = { unit: chName, topics: Array.isArray(ch.topics) ? [...ch.topics] : [] };
+          merged.chapters.push(newCh);
+          chapterMap.set(chName, newCh);
+        }
+      });
+    }
+  });
+
+  merged.officialSyllabus = [...new Set(merged.officialSyllabus)];
+  merged.courseOutcomes = [...new Set(merged.courseOutcomes)];
+  merged.assessmentInfo = [...new Set(merged.assessmentInfo)];
+  merged.references = [...new Set(merged.references)];
+
+  const defMap = new Map();
+  merged.importantDefinitions.forEach(d => {
+    if (d.concept && d.definition) defMap.set(d.concept.toLowerCase(), d);
+  });
+  merged.importantDefinitions = [...defMap.values()];
+
+  const numMap = new Map();
+  merged.importantNumbers.forEach(n => {
+    if (n.number && n.context) numMap.set(n.number.toLowerCase() + n.context.toLowerCase(), n);
+  });
+  merged.importantNumbers = [...numMap.values()];
+
+  const priorityDedupped = new Map();
+  merged.priorityMap.forEach(p => {
+    if (p.topic) priorityDedupped.set(p.topic.toLowerCase(), p);
+  });
+  merged.priorityMap = [...priorityDedupped.values()];
+
+  const csMap = new Map();
+  merged.caseStudies.forEach(cs => {
+    if (cs.title) csMap.set(cs.title.toLowerCase(), cs);
+  });
+  merged.caseStudies = [...csMap.values()];
+
+  const tutMap = new Map();
+  merged.tutorialQuestions.forEach(t => {
+    if (t.question) tutMap.set(t.question.toLowerCase(), t);
+  });
+  merged.tutorialQuestions = [...tutMap.values()];
+
+  const vivaMap = new Map();
+  merged.vivaTopics.forEach(v => {
+    if (v.topic) vivaMap.set(v.topic.toLowerCase(), v);
+  });
+  merged.vivaTopics = [...vivaMap.values()];
+
+  return merged;
 };
 
 /**
@@ -583,66 +768,169 @@ ${promptTemplate}
   return { prompt, inlineData };
 };
 
-// 1. OUTLINE EXTRACTION ENDPOINT
-app.post('/api/outline', async (req, res) => {
-  const { provider, model, allowFallback } = req.body;
+// 0. DOCUMENT ANALYSIS ENDPOINT
+app.post('/api/analyze-document', async (req, res) => {
+  const { parsedResult, provider, model, allowFallback } = req.body;
 
-  if (!provider || !model) {
-    return res.status(400).json({ error: { message: 'Missing parameters. Required: provider, model.' } });
+  if (!provider || !model || !parsedResult) {
+    return res.status(400).json({ error: { message: 'Missing parameters. Required: provider, model, parsedResult.' } });
   }
 
   try {
-    const promptTemplate = `
-You are an expert academic curriculum designer.
-Analyze the attached course material.
-Your goal is to extract a clean, logical Table of Contents / topic outline for a comprehensive study guide based on the document.
-Group the content into logical "Units" (or Chapters), and within each Unit, list the specific "Topics".
-For each topic, provide a brief 1-sentence description of what it covers.
-
-Output your response strictly as a JSON array of Units, matching this schema:
-[
-  {
-    "unit": "Unit 1: [Unit Name]",
-    "topics": [
-      {
-        "id": "1",
-        "name": "[Topic Name]",
-        "description": "[1-sentence description of what this topic covers based on the content]"
-      }
-    ]
-  }
-]
-
-Ensure you cover the entire document content. Do not invent topics that are not present.
-Output ONLY the raw JSON array. Do not wrap it in markdown code blocks.
-`;
-
-    const { prompt, inlineData } = await prepareModelPromptAndInputs(req, promptTemplate, true);
-
+    const pages = await getSourcePages(parsedResult);
+    const chunks = chunkPages(pages, 80000);
+    const analyses = [];
+    
     const keys = {
       gemini: req.headers['x-gemini-key'] || req.headers['x-api-key'] || process.env.GEMINI_API_KEY,
       openai: req.headers['x-openai-key'] || process.env.OPENAI_API_KEY,
       groq: req.headers['x-groq-key'] || process.env.GROQ_API_KEY
     };
 
-    const result = await callLLMWithRetryAndFallback(
-      prompt,
-      keys,
-      inlineData,
-      true,
-      provider,
-      model,
-      allowFallback !== false
-    );
+    let meta = {};
 
-    res.json({
-      data: safeParseJson(result.text),
-      _meta: {
+    for (const chunk of chunks) {
+      const chunkText = chunk.map(p => `[Page/Slide ${p.pageNumber}: ${p.title}]\n${p.content}`).join('\n\n');
+      const chunkPrompt = `
+${GROUNDING_RULES}
+
+${ANALYZE_DOCUMENT_PROMPT}
+
+[SOURCE MATERIAL]
+---
+${chunkText}
+---
+`;
+
+      const result = await callLLMWithRetryAndFallback(
+        chunkPrompt,
+        keys,
+        null,
+        true,
+        provider,
+        model,
+        allowFallback !== false
+      );
+
+      const parsed = safeParseJson(result.text);
+      analyses.push(parsed);
+      meta = {
         providerUsed: result.providerUsed,
         modelUsed: result.modelUsed,
         fallbackTriggered: result.fallbackTriggered,
         fallbackMessages: result.fallbackMessages
+      };
+    }
+
+    const merged = mergeAnalysis(analyses);
+
+    res.json({
+      data: merged,
+      _meta: meta
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: { message: err.message || 'Error performing document analysis.' } });
+  }
+});
+
+// 1. OUTLINE EXTRACTION ENDPOINT
+app.post('/api/outline', async (req, res) => {
+  const { parsedResult, provider, model, allowFallback } = req.body;
+
+  if (!provider || !model || !parsedResult) {
+    return res.status(400).json({ error: { message: 'Missing parameters. Required: provider, model, parsedResult.' } });
+  }
+
+  try {
+    const pages = await getSourcePages(parsedResult);
+    const chunks = chunkPages(pages, 80000);
+    const outlines = [];
+    
+    const keys = {
+      gemini: req.headers['x-gemini-key'] || req.headers['x-api-key'] || process.env.GEMINI_API_KEY,
+      openai: req.headers['x-openai-key'] || process.env.OPENAI_API_KEY,
+      groq: req.headers['x-groq-key'] || process.env.GROQ_API_KEY
+    };
+
+    let meta = {};
+
+    for (const chunk of chunks) {
+      const chunkText = chunk.map(p => `[Page/Slide ${p.pageNumber}: ${p.title}]\n${p.content}`).join('\n\n');
+      const chunkPrompt = `
+${GROUNDING_RULES}
+
+${OUTLINE_PROMPT}
+
+[SOURCE MATERIAL]
+---
+${chunkText}
+---
+`;
+
+      const result = await callLLMWithRetryAndFallback(
+        chunkPrompt,
+        keys,
+        null,
+        true,
+        provider,
+        model,
+        allowFallback !== false
+      );
+
+      const parsed = safeParseJson(result.text);
+      outlines.push(parsed);
+      meta = {
+        providerUsed: result.providerUsed,
+        modelUsed: result.modelUsed,
+        fallbackTriggered: result.fallbackTriggered,
+        fallbackMessages: result.fallbackMessages
+      };
+    }
+
+    // Merge outlines
+    let mergedSyllabusLines = '';
+    const mergedUnits = [];
+    const unitMap = new Map();
+
+    outlines.forEach(out => {
+      if (out.syllabusLines && out.syllabusLines !== 'Official syllabus lines were not present in the uploaded presentation.') {
+        if (mergedSyllabusLines) {
+          mergedSyllabusLines += '\n' + out.syllabusLines;
+        } else {
+          mergedSyllabusLines = out.syllabusLines;
+        }
       }
+      
+      if (out.units && Array.isArray(out.units)) {
+        out.units.forEach(u => {
+          const uName = u.unit.trim();
+          if (unitMap.has(uName)) {
+            const existing = unitMap.get(uName);
+            if (u.topics && Array.isArray(u.topics)) {
+              u.topics.forEach(t => {
+                if (!existing.topics.some(existingTopic => existingTopic.name.toLowerCase() === t.name.toLowerCase())) {
+                  existing.topics.push(t);
+                }
+              });
+            }
+          } else {
+            const newUnit = { unit: uName, topics: u.topics ? [...u.topics] : [] };
+            mergedUnits.push(newUnit);
+            unitMap.set(uName, newUnit);
+          }
+        });
+      }
+    });
+
+    if (!mergedSyllabusLines) {
+      mergedSyllabusLines = 'Official syllabus lines were not present in the uploaded presentation.';
+    }
+
+    res.json({
+      data: mergedUnits,
+      syllabusLines: mergedSyllabusLines,
+      _meta: meta
     });
   } catch (err) {
     console.error(err);
@@ -652,58 +940,44 @@ Output ONLY the raw JSON array. Do not wrap it in markdown code blocks.
 
 // 2. NOTES GENERATION ENDPOINT
 app.post('/api/notes', async (req, res) => {
-  const { topicName, topicDescription, depth, provider, model, allowFallback } = req.body;
+  const { topicName, topicDescription, depth, provider, model, allowFallback, parsedResult, topicPages, domainType } = req.body;
 
-  if (!topicName || !provider || !model) {
-    return res.status(400).json({ error: { message: 'Missing parameters. Required: topicName, provider, model.' } });
+  if (!topicName || !provider || !model || !parsedResult) {
+    return res.status(400).json({ error: { message: 'Missing parameters. Required: topicName, provider, model, parsedResult.' } });
   }
 
   try {
-    const promptTemplate = `
-You are an expert college professor in STEM and Computer Science.
-Generate highly detailed, comprehensive exam-ready study notes for the topic: "${topicName}" (${topicDescription || ''}).
-Use the source material as the primary source of truth, expanding on it using standard, correct academic knowledge to ensure absolute completeness.
+    const pages = await getSourcePages(parsedResult);
+    let relevantPages = [];
 
-Target Note Depth: ${depth || 'standard'} (choose depth styling: concise, standard, detailed. Detailed should have maximum elaboration and exhaustive explanations).
-
-You MUST return a JSON object matching this schema. Provide detailed contents for every single field:
-{
-  "topicName": "${topicName}",
-  "definition": "[Detailed explanation written for someone encountering it for the first time. Keep it precise, professional, yet easy to understand.]",
-  "whyItMatters": "[Real-world relevance, practical applications, or where this concept is used in industry/engineering.]",
-  "howItWorks": [
-    "[Step 1 of the working mechanism, detailed]",
-    "[Step 2 of the working mechanism, detailed]",
-    "[Step 3 (or more) of the working mechanism, detailed]"
-  ],
-  "complexity": {
-    "time": "[Time complexity (e.g. O(1), O(log n)) if applicable; otherwise key quantitative metrics/formulas]",
-    "space": "[Space complexity if applicable; otherwise secondary metrics/formulas]",
-    "explanation": "[Detailed explanation of why these complexities/metrics/formulas hold true]"
-  },
-  "codeSnippet": {
-    "language": "[Programming language, e.g. javascript, python, cpp, java or 'none' if math/science]",
-    "code": "[Clean, highly commented code block illustrating the concept; or a worked numerical/algebraic example if non-programming]",
-    "explanation": "[Line-by-line or step-by-step walkthrough of the code or example]"
-  },
-  "examFocus": [
-    "Common Mistake: [Explain a common student pitfall or mistake on this topic]",
-    "Exam Trick: [Provide a typical exam question focus or key trick to remember]"
-  ],
-  "comparisons": [
-    {
-      "feature": "[Feature to compare, e.g. Speed, Balancing, Memory]",
-      "conceptA": "[Details for this concept, ${topicName}]",
-      "conceptB": "[Details for a related concept or variant, e.g. standard implementation vs optimized]"
+    if (topicPages && Array.isArray(topicPages) && topicPages.length > 0) {
+      // Extract pages in topicPages, plus 1 before and 1 after buffer
+      const pageNumbersToInclude = new Set();
+      topicPages.forEach(p => {
+        pageNumbersToInclude.add(p);
+        if (p > 1) pageNumbersToInclude.add(p - 1);
+        pageNumbersToInclude.add(p + 1);
+      });
+      relevantPages = pages.filter(p => pageNumbersToInclude.has(p.pageNumber));
     }
-  ],
-  "diagramSvg": "[A clean, modern SVG diagram representing the concept's structure, flow, or layout. Use a transparent background. Draw boxes, nodes, text labels, and arrows using clean SVG elements (<svg viewBox=\\"0 0 400 200\\"><rect .../><text .../><line .../></svg>). Keep style inline and use colors from this palette: Accent: #3b82f6 (blue), Muted: #71717a, Text: #fafafa or #09090b depending on light/dark mode. Ensure it is neat and fits within 400x200 viewBox.]"
-}
 
-Strictly output ONLY the JSON string. Do not include markdown code blocks.
+    if (relevantPages.length === 0) {
+      relevantPages = pages;
+    }
+
+    const sourceText = relevantPages.map(p => `[Page/Slide ${p.pageNumber}: ${p.title}]\n${p.content}`).join('\n\n');
+
+    const effectiveDomainType = domainType || 'mixed';
+    const prompt = `
+${GROUNDING_RULES}
+
+${TOPIC_NOTES_PROMPT.replace(/{topicName}/g, topicName).replace(/{depth}/g, depth || 'standard').replace(/{domainType}/g, effectiveDomainType)}
+
+[SOURCE MATERIAL]
+---
+${sourceText}
+---
 `;
-
-    const { prompt, inlineData } = await prepareModelPromptAndInputs(req, promptTemplate, false);
 
     const keys = {
       gemini: req.headers['x-gemini-key'] || req.headers['x-api-key'] || process.env.GEMINI_API_KEY,
@@ -714,7 +988,7 @@ Strictly output ONLY the JSON string. Do not include markdown code blocks.
     const result = await callLLMWithRetryAndFallback(
       prompt,
       keys,
-      inlineData,
+      null,
       true,
       provider,
       model,
@@ -745,27 +1019,24 @@ app.post('/api/summary', async (req, res) => {
   }
 
   try {
+    // Build a richer summary input that includes memory tricks, definitions, key points, and exam questions
     const topicsSummaryData = topicsNotes.map(n => ({
-      name: n.topicName,
-      def: n.definition.substring(0, 150) + '...',
-      metric: n.complexity.time || 'N/A'
+      topicName: n.topicName,
+      definition: (n.definitions && n.definitions.length > 0) ? n.definitions[0] : (n.sourceContent?.content?.substring(0, 200) || ''),
+      priority: n.priority?.level || n.priority || 'MEDIUM',
+      keyPoints: (n.keyPoints || []).slice(0, 5),
+      memoryTricks: n.memoryTricks || [],
+      examTips: (n.examTips || []).slice(0, 3),
+      hasFormula: !!(n.workedExample && n.workedExample.formula),
+      hasDiagram: !!(n.diagram && n.diagram.svg),
+      hasCode: !!(n.codeExample && n.codeExample.code),
+      hasCaseStudy: !!(n.caseStudy && n.caseStudy.title)
     }));
 
     const prompt = `
-You are an expert exam advisor. Create a master summary cheat-sheet table summarizing the key facts of these topics:
-${JSON.stringify(topicsSummaryData)}
+${GROUNDING_RULES}
 
-Return a JSON array of objects representing the master summary table:
-[
-  {
-    "topic": "[Topic Name]",
-    "coreTakeaway": "[Key 1-sentence definition/takeaway]",
-    "criticalMetric": "[Complexity, formulas, or key metric]",
-    "examTip": "[Single most important exam tip or formula]"
-  }
-]
-
-Strictly output ONLY the JSON string. Do not wrap in markdown code blocks.
+${SUMMARY_PROMPT.replace('{topicsNotesJson}', JSON.stringify(topicsSummaryData))}
 `;
 
     const keys = {
